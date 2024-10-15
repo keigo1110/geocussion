@@ -1,4 +1,3 @@
-'''可視化機能を削除'''
 import pyrealsense2 as rs
 import numpy as np
 import open3d as o3d
@@ -7,6 +6,7 @@ import pygame
 from scipy.spatial import KDTree
 import os
 import time
+import mediapipe as mp  # Mediapipeを追加
 
 # RealSenseセットアップ
 pipeline = rs.pipeline()
@@ -14,6 +14,10 @@ config = rs.config()
 config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
 config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
 pipeline.start(config)
+
+# Mediapipeの初期化
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(max_num_hands=1)
 
 # Pygameの初期化
 pygame.init()
@@ -45,61 +49,46 @@ def save_sandbox_shape():
     o3d.io.write_point_cloud("sandbox.ply", pcd)
     return pcd, vertices
 
-# 背景差分法の設定
-fgbg = cv2.createBackgroundSubtractorMOG2()
-
-# 深度データから手の位置を取得する関数
-def get_hand_position(depth_frame, color_image):
-    # Convert depth frame to numpy array
-    depth_image = np.asanyarray(depth_frame.get_data())
-    
-    # color_image is already a numpy array, so we don't need to convert it
-
-    # Apply color thresholding to detect skin color
-    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
-    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
-    hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, lower_skin, upper_skin)
-
-    # Apply morphological operations to remove noise
-    kernel = np.ones((5,5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-    # Find contours
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    hand_center_3d = None
-    if contours:
-        # Find the largest contour (assumed to be the hand)
-        max_contour = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(max_contour) > 3000:  # Minimum area threshold
-            # Find the center of the contour
-            M = cv2.moments(max_contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-
-                # Get the depth at the center point
-                depth = depth_frame.get_distance(cx, cy)
-
-                # Convert 2D point to 3D point
-                depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
-                hand_center_3d = rs.rs2_deproject_pixel_to_point(depth_intrin, [cx, cy], depth)
-
-                # Draw the contour and center point
-                cv2.drawContours(color_image, [max_contour], 0, (0, 255, 0), 2)
-                cv2.circle(color_image, (cx, cy), 5, (0, 0, 255), -1)
-
-    # Create depth colormap
-    depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
-
-    return hand_center_3d, depth_colormap, color_image
-
 # 音の設定
 sound = create_sound()
 sound_playing = False
 last_distance = float('inf')  # 前回の距離を記録
+
+# 深度データから手の位置を取得する関数（Mediapipeを使用）
+def get_hand_position(depth_frame, color_image):
+    hand_center_3d = None
+
+    # RGB画像をMediapipeに渡すために変換
+    color_image_rgb = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+    results = hands.process(color_image_rgb)
+
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            # 手のランドマークの中心（中指の根元）を取得
+            cx, cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].x * color_image.shape[1]), \
+                     int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].y * color_image.shape[0])
+
+            # 座標が範囲外でないかを確認
+            cx = max(0, min(cx, color_image.shape[1] - 1))  # x座標を範囲内に調整
+            cy = max(0, min(cy, color_image.shape[0] - 1))  # y座標を範囲内に調整
+
+            # 深度フレームから深度を取得
+            depth = depth_frame.get_distance(cx, cy)
+
+            # 2D座標を3D座標に変換
+            depth_intrin = depth_frame.profile.as_video_stream_profile().intrinsics
+            hand_center_3d = rs.rs2_deproject_pixel_to_point(depth_intrin, [cx, cy], depth)
+
+            # バウンディングボックスと中心点を描画
+            cv2.circle(color_image, (cx, cy), 5, (0, 0, 255), -1)
+            break  # 最初の手だけを処理
+
+    # 深度画像を取得
+    depth_image = np.asanyarray(depth_frame.get_data())
+    depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET)
+
+    return hand_center_3d, depth_colormap, color_image
+
 
 try:
     point_cloud = None

@@ -26,8 +26,9 @@ pygame.mixer.init()
 
 # 音声オブジェクトの作成
 def create_sound():
-    sound = pygame.mixer.Sound('touch.mp3')
-    return sound
+    sound_close = pygame.mixer.Sound('touch.mp3')  # First sound
+    sound_far = pygame.mixer.Sound('shukin.mp3')  # Second sound
+    return sound_close, sound_far
 
 # 3Dデータの保存関数
 def save_sandbox_shape():
@@ -51,9 +52,23 @@ def save_sandbox_shape():
     return pcd, vertices
 
 # 音の設定
-sound = create_sound()
-sound_playing = False
+sound_close, sound_far = create_sound()
+sound_playing = None
 last_distance = float('inf')  # 前回の距離を記録
+
+# Modify this part to check z value and play sound accordingly
+def play_sound_based_on_z(z_value):
+    global sound_playing
+    if z_value < 0.5:  # If hand is close to the camera
+        if sound_playing != 'close':
+            sound_far.stop()
+            sound_close.play()
+            sound_playing = 'close'
+    else:  # If hand is far from the camera
+        if sound_playing != 'far':
+            sound_close.stop()
+            sound_far.play()
+            sound_playing = 'far'
 
 # 深度データから手の位置を取得する関数（Mediapipeを使用）
 def get_hand_position(depth_frame, color_image):
@@ -123,22 +138,23 @@ try:
 
         if hand_position is not None and kdtree is not None:
             distance, _ = kdtree.query(hand_position)
+            hand_z_value = hand_position[2]
             print(f"手と3Dデータの距離: {distance:.6f} メートル")
 
             if distance < 0.03 and not sound_playing:
-                sound.play()
+                play_sound_based_on_z(hand_z_value)
                 sound_playing = True
             elif distance >= 0.03 and sound_playing:
-                sound.stop()
+                play_sound_based_on_z(hand_z_value)
                 sound_playing = False
 
             # 距離の変化が大きい場合にのみ音を再生/停止
             if abs(distance - last_distance) > 0.01:
                 if distance < 0.03 and not sound_playing:
-                    sound.play()
+                    play_sound_based_on_z(hand_z_value)
                     sound_playing = True
                 elif distance >= 0.03 and sound_playing:
-                    sound.stop()
+                    play_sound_based_on_z(hand_z_value)
                     sound_playing = False
                 last_distance = distance
 

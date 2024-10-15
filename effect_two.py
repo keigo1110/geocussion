@@ -1,4 +1,4 @@
-'''手の検出精度アップ'''
+'''高さによって音が変える仕組みを追加'''
 import pyrealsense2 as rs
 import numpy as np
 import open3d as o3d

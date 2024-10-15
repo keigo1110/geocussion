@@ -1,0 +1,7 @@
+pyrealsense2
+numpy
+open3d
+opencv-python
+pygame
+scipy
+mediapipe

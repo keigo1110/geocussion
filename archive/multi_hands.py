@@ -1,3 +1,4 @@
+'''複数の手に対応'''
 import pyrealsense2 as rs
 import numpy as np
 import open3d as o3d

@@ -38,5 +38,14 @@ RealSenseデバイスを使用して、カメラ映像と深度データを取�
 - hand_detect.py
     - 手の検知を強化
 
-- effect_two.py（最新版）
+- effect_two.py
     - 高さによって音が変える仕組みを追加
+
+- model_accuracy.py
+    - 前処理など追加
+
+- multi_hands.py
+    - 複数の手に対応
+
+- good_sound.py（最新版）
+    - 音の体験を改善

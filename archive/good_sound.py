@@ -184,7 +184,7 @@ try:
                 print(f"手{hand_index + 1}と3Dデータの距離: {distance:.6f} メートル")
 
                 # 以下、既存の距離に基づく処理を続終
-                if distance < 0.03:
+                if distance < 0.05:
                     play_sound_based_on_z(hand_index, hand_z_value)
                     sound_playing[hand_index] = True
                 else:

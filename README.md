@@ -1,4 +1,12 @@
 # 環境開発
+## RealSense
+RealSenseのSDK入れる
+
+https://github.com/IntelRealSense/librealsense
+
+RealSenseの設置は砂場の真上で，カメラ向きは真下．
+
+## ライブラリインストール
 Python 3.10.15
 ```
 pip install -r requirements.txt
@@ -47,5 +55,9 @@ RealSenseデバイスを使用して、カメラ映像と深度データを取�
 - multi_hands.py
     - 複数の手に対応
 
-- good_sound.py（最新版）
+- good_sound.py
     - 音の体験を改善
+- palam_top.py
+    - パラメータを上部にもってくる
+- hand_def.py（最新版）
+    - 手の検出を関数として取り出した

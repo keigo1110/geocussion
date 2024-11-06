@@ -5,7 +5,7 @@ DEPTH_HEIGHT = 480  # 深度カメラの高さ
 FRAME_RATE = 30  # フレームレート
 MAX_HANDS = 2  # 検出する手の最大数
 COOLDOWN_TIME = 1.0  # 音の再生間隔（秒）
-DISTANCE_THRESHOLD = 0.08  # 手と3Dデータの距離閾値（メートル）
+DISTANCE_THRESHOLD = 0.025  # 手と3Dデータの距離閾値（メートル）
 CLOSE_HAND_THRESHOLD = 0.5  # 手が近いと判断する閾値（メートル）
 DETECT_RIGHT_HAND = True  # 右手を検出するかどうか
 DETECT_LEFT_HAND = True   # 左手を検出するかどうか
@@ -22,6 +22,96 @@ import mediapipe as mp
 from collections import deque
 import tensorflow as tf
 from pykalman import KalmanFilter
+
+class SoundController:
+    def __init__(self, close_sound_path='music/A00.mp3', far_sound_path='music/A04.mp3'):
+        """
+        音声制御クラスの初期化
+        Args:
+            close_sound_path: 近い時の音声ファイルパス
+            far_sound_path: 遠い時の音声ファイルパス
+        """
+        self.sound_close = pygame.mixer.Sound(close_sound_path)
+        self.sound_far = pygame.mixer.Sound(far_sound_path)
+        
+        # クロスフェード用のパラメータ
+        self.fade_duration = 0.1  # フェードの持続時間を短く
+        self.current_volume = 0.0
+        self.target_volume = 0.0
+        self.last_update_time = time.time()
+        
+        # 音量制御用のパラメータ
+        self.sound_close.set_volume(0.0)
+        self.sound_far.set_volume(0.0)
+        self.is_playing = False
+        
+        # スムージング用のパラメータ（履歴を短く）
+        self.distance_history = deque(maxlen=3)
+        self.z_value_history = deque(maxlen=3)
+    
+    def update_sound(self, distance, z_value):
+        """
+        距離と深さに基づいて音を更新する
+        Args:
+            distance: 3Dデータとの距離
+            z_value: 手のZ座標（深さ）
+        """
+        # 距離の履歴を更新
+        self.distance_history.append(distance)
+        self.z_value_history.append(z_value)
+        
+        # スムージングされた値を計算
+        avg_distance = sum(self.distance_history) / len(self.distance_history)
+        avg_z_value = sum(self.z_value_history) / len(self.z_value_history)
+        
+        current_time = time.time()
+        delta_time = current_time - self.last_update_time
+        self.last_update_time = current_time
+
+        # 距離チェックの緩和
+        if avg_distance < DISTANCE_THRESHOLD * 1.2:  # 閾値を20%緩和
+            self.target_volume = self._calculate_volume(avg_distance, avg_z_value)
+            # 最小音量を設定
+            self.target_volume = max(0.1, self.target_volume)
+        else:
+            self.target_volume = 0.0
+        
+        # クロスフェードの適用（より速い応答に）
+        volume_change = (self.target_volume - self.current_volume)
+        if abs(volume_change) > 0.001:  # より小さな変化にも反応
+            self.current_volume += volume_change * min(delta_time / self.fade_duration, 1.0)
+            self.current_volume = max(0.0, min(1.0, self.current_volume))
+        
+        # 音量の適用と再生制御（閾値を下げる）
+        if self.current_volume > 0.001:  # より小さな音量でも再生
+            if not self.is_playing:
+                self.sound_close.play(-1)  # ループ再生
+                self.is_playing = True
+            self.sound_close.set_volume(self.current_volume)
+        else:
+            if self.is_playing:
+                self.sound_close.stop()
+                self.is_playing = False
+    
+    def _calculate_volume(self, distance, z_value):
+        """
+        距離と深さに基づいて音量を計算する
+        """
+        # 距離による音量の減衰（より緩やかに）
+        distance_factor = 1.0 - (distance / (DISTANCE_THRESHOLD * 1.2))
+        distance_factor = max(0.0, min(1.0, distance_factor))
+        
+        # 深さによる音量の調整（より緩やかに）
+        z_factor = 1.0 - (z_value / (CLOSE_HAND_THRESHOLD * 1.2))
+        z_factor = max(0.0, min(1.0, z_factor))
+        
+        # 総合的な音量を計算（最小値を設定）
+        return max(0.1, distance_factor * z_factor)
+    
+    def cleanup(self):
+        """リソースの解放"""
+        self.sound_close.stop()
+        self.sound_far.stop()
 
 # RealSenseカメラの初期設定
 pipeline = rs.pipeline()
@@ -50,12 +140,11 @@ for kf in kalman_filters:
 pygame.init()
 pygame.mixer.init()
 
-# 音声ファイルの読み込み関数
-def create_sound():
-    """音声ファイルを読み込み、サウンドオブジェクトを生成する"""
-    sound_close = pygame.mixer.Sound('music/A00.mp3')  # 手が近い時の音
-    sound_far = pygame.mixer.Sound('music/A04.mp3')   # 手が遠い時の音
-    return sound_close, sound_far
+# サウンドコントローラーの初期化
+sound_controllers = {
+    "Right": SoundController('music/A00.mp3', 'music/A00.mp3'),
+    "Left": SoundController('music/A00.mp3', 'music/A04.mp3')
+}
 
 # 3D点群データの保存関数
 def save_sandbox_shape():
@@ -143,21 +232,6 @@ def save_sandbox_shape():
         print(f"点群データの保存中にエラーが発生しました: {e}")
         return None, None
 
-# 手の状態管理クラス
-class HandState:
-    def __init__(self):
-        self.sound_playing = False
-        self.last_play_time = 0
-        self.last_distance = float('inf')
-
-# 音声再生の状態管理用の変数
-sound_close, sound_far = create_sound()
-hand_states = {
-    "Right": HandState(),
-    "Left": HandState()
-}
-
-# カルマンフィルターによる手の位置の平滑化
 def smooth_hand_positions_kalman(hand_index, current_position):
     """
     カルマンフィルターを使用して手の位置データを平滑化する
@@ -213,11 +287,7 @@ def get_hand_positions(depth_frame, color_image):
                (hand_type == "Left" and not DETECT_LEFT_HAND):
                 continue
 
-            # 中指の付け根の位置を手の中心として使用
-            # cx = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].x * color_image.shape[1])
-            # cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].y * color_image.shape[0])
-
-            #中指の先端の位置を手の中心として使用
+            # 人差し指の先端の位置を手の中心として使用
             cx = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * color_image.shape[1])
             cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * color_image.shape[0])
 
@@ -251,36 +321,6 @@ def get_hand_positions(depth_frame, color_image):
 
     return hand_positions_3d, hand_types, depth_colormap, color_image
 
-def play_sound_based_on_z(hand_type, z_value):
-    """
-    手のZ座標（深さ）に基づいて適切な音を再生する
-    Args:
-        hand_type (str): 手の種類（"Right" または "Left"）
-        z_value (float): 手のZ座標（深さ）
-    """
-    state = hand_states[hand_type]
-    current_time = time.time()
-
-    # クールダウン時間チェック
-    if current_time - state.last_play_time < COOLDOWN_TIME:
-        return
-
-    # 手の位置に応じて音を再生
-    if z_value < CLOSE_HAND_THRESHOLD:  # 手が近い場合
-        if not state.sound_playing:
-            sound_far.stop()
-            sound_close.play()
-            state.sound_playing = True
-            state.last_play_time = current_time
-            print(f"{hand_type}の手が近づきました")
-    else:  # 手が遠い場合
-        if state.sound_playing:
-            sound_close.stop()
-            sound_far.play()
-            state.sound_playing = False
-            state.last_play_time = current_time
-            print(f"{hand_type}の手が離れました")
-
 def calculate_hand_distances(hand_positions, hand_types, kdtree):
     """
     手の位置と3Dデータとの距離を計算し、適切な音を再生する
@@ -297,20 +337,12 @@ def calculate_hand_distances(hand_positions, hand_types, kdtree):
             (hand_type == "Left" and not DETECT_LEFT_HAND)):
             continue
 
-        hand_z_value = hand_position[2]
         distance, _ = kdtree.query(hand_position)
         print(f"{hand_type}の手と3Dデータの距離: {distance:.6f} メートル")
+        
+        # それぞれの手に対応するサウンドコントローラーを更新
+        sound_controllers[hand_type].update_sound(distance, hand_position[2])
 
-        if distance < DISTANCE_THRESHOLD:
-            play_sound_based_on_z(hand_type, hand_z_value)
-        else:
-            # 距離が閾値を超えた場合は音を停止
-            if hand_states[hand_type].sound_playing:
-                sound_close.stop()
-                sound_far.stop()
-                hand_states[hand_type].sound_playing = False
-
-# メインループ
 def main():
     """
     メインプログラムのループ処理
@@ -391,6 +423,8 @@ def main():
     finally:
         # リソースの解放
         pipeline.stop()
+        for controller in sound_controllers.values():
+            controller.cleanup()
         pygame.mixer.quit()
         pygame.quit()
         cv2.destroyAllWindows()

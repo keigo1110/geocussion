@@ -213,8 +213,12 @@ def get_hand_positions(depth_frame, color_image):
                 continue
 
             # 中指の付け根の位置を手の中心として使用
-            cx = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].x * color_image.shape[1])
-            cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].y * color_image.shape[0])
+            # cx = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].x * color_image.shape[1])
+            # cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_MCP].y * color_image.shape[0])
+
+            #中指の先端の位置を手の中心として使用
+            cx = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * color_image.shape[1])
+            cy = int(hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * color_image.shape[0])
 
             # 画像範囲内に収める
             cx = max(0, min(cx, color_image.shape[1] - 1))

@@ -26,8 +26,8 @@ pygame.mixer.init()
 
 # 音声オブジェクトの作成
 def create_sound():
-    sound_close = pygame.mixer.Sound('touch.mp3')  # First sound
-    sound_far = pygame.mixer.Sound('shukin.mp3')  # Second sound
+    sound_close = pygame.mixer.Sound('music/A00.mp3')  # First sound
+    sound_far = pygame.mixer.Sound('music/A04.mp3')  # Second sound
     return sound_close, sound_far
 
 # 3Dデータの保存関数
@@ -59,7 +59,7 @@ last_distance = float('inf')  # 前回の距離を記録
 # Modify this part to check z value and play sound accordingly
 def play_sound_based_on_z(z_value):
     global sound_playing
-    if z_value < 0.5:  # If hand is close to the camera
+    if z_value < 0.4:  # If hand is close to the camera
         if sound_playing != 'close':
             sound_far.stop()
             sound_close.play()

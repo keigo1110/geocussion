@@ -45,7 +45,13 @@ class SoundController:
         
         # 無音検出用のパラメータ
         self.last_detection_time = time.time()
-        self.no_detection_timeout = 0.5  # 検出がない場合のタイムアウト時間（秒）
+        self.no_detection_timeout = 0.5
+        
+        # 接触状態追跡用のパラメータ
+        self.is_in_contact = False
+        self.last_contact_time = 0
+        self.contact_cooldown = 0.5  # 次の接触を認識するまでの最小時間（秒）
+        self.contact_threshold = DISTANCE_THRESHOLD * 1.2  # 接触判定の閾値
     
     def update_sound(self, distance, z_value):
         current_time = time.time()
@@ -59,14 +65,26 @@ class SoundController:
         avg_distance = sum(self.distance_history) / len(self.distance_history)
         avg_z_value = sum(self.z_value_history) / len(self.z_value_history)
         
+        # 接触状態の判定
+        was_in_contact = self.is_in_contact
+        self.is_in_contact = avg_distance < self.contact_threshold
+        
+        # 非接触から接触への移行を検出
+        if not was_in_contact and self.is_in_contact:
+            time_since_last_contact = current_time - self.last_contact_time
+            if time_since_last_contact > self.contact_cooldown:
+                # 新しい接触を検出し、クールダウン時間を超えている場合のみ音を鳴らす
+                self.target_volume = self._calculate_volume(avg_distance, avg_z_value)
+                self.last_contact_time = current_time
+            else:
+                # クールダウン中は音を鳴らさない
+                self.target_volume = 0.0
+        elif not self.is_in_contact:
+            # 非接触状態では音を停止
+            self.target_volume = 0.0
+        
         delta_time = current_time - self.last_update_time
         self.last_update_time = current_time
-
-        if avg_distance < DISTANCE_THRESHOLD * 1.2:
-            self.target_volume = self._calculate_volume(avg_distance, avg_z_value)
-            self.target_volume = max(0.1, self.target_volume)
-        else:
-            self.target_volume = 0.0
         
         # クロスフェードの適用
         volume_change = (self.target_volume - self.current_volume)
@@ -77,7 +95,7 @@ class SoundController:
         # 音量の適用と再生制御
         if self.current_volume > 0.001:
             if not self.is_playing:
-                self.sound_close.play(-1)
+                self.sound_close.play()  # ループを削除し、一回だけ再生
                 self.is_playing = True
             self.sound_close.set_volume(self.current_volume)
         else:
@@ -86,9 +104,6 @@ class SoundController:
                 self.is_playing = False
     
     def check_timeout(self):
-        """
-        一定時間検出がない場合に音を停止する
-        """
         if time.time() - self.last_detection_time > self.no_detection_timeout:
             if self.is_playing:
                 self.sound_close.stop()
@@ -97,9 +112,10 @@ class SoundController:
                 self.target_volume = 0.0
                 self.distance_history.clear()
                 self.z_value_history.clear()
+                self.is_in_contact = False  # 接触状態もリセット
     
     def _calculate_volume(self, distance, z_value):
-        distance_factor = 1.0 - (distance / (DISTANCE_THRESHOLD * 1.2))
+        distance_factor = 1.0 - (distance / self.contact_threshold)
         distance_factor = max(0.0, min(1.0, distance_factor))
         
         z_factor = 1.0 - (z_value / (CLOSE_HAND_THRESHOLD * 1.2))
@@ -121,9 +137,9 @@ pipeline.start(config)
 # MediaPipeの手検出モジュールの初期化
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
-    max_num_hands=MAX_HANDS,
-    min_detection_confidence=0.7,
-    min_tracking_confidence=0.5
+    max_num_hands=MAX_HANDS,         # 検出する手の最大数
+    min_detection_confidence=0.7,    # 検出信頼度の閾値
+    min_tracking_confidence=0.5,      # 追跡信頼度の閾値
 )
 
 # 各手のカルマンフィルターの初期化（ノイズ除去用）
@@ -144,13 +160,26 @@ sound_controllers = {
     "Left": SoundController('music/A00.mp3', 'music/A04.mp3')
 }
 
-# 3D点群データの保存関数
 def save_sandbox_shape():
     """
     現在の深度フレームから3D点群を生成し、ノイズ除去処理を行った後PLYファイルとして保存する
     Returns:
         tuple: (処理済み点群, 頂点データ)
     """
+    # 保存開始・終了音の設定
+    try:
+        start_sound = pygame.mixer.Sound('music/shukin.mp3')  # 開始音
+        complete_sound = pygame.mixer.Sound('music/touch.mp3')  # 完了音
+    except:
+        print("警告: 音声ファイルの読み込みに失敗しました")
+        start_sound = None
+        complete_sound = None
+
+    # 保存開始音を再生
+    if start_sound:
+        start_sound.play()
+        print("3Dスキャン開始")
+    
     # パラメータ設定
     FRAMES_TO_AVERAGE = 5  # 平均化するフレーム数
     STATISTICAL_NB_NEIGHBORS = 20  # 統計的外れ値除去の近傍点数
@@ -225,10 +254,23 @@ def save_sandbox_shape():
         # PLYファイルとして保存
         o3d.io.write_point_cloud("sandbox_processed.ply", pcd)
         print("処理済み点群を保存しました: sandbox_processed.ply")
+        
+        # 保存完了音を再生
+        if complete_sound:
+            complete_sound.play()
+            # 完了音が鳴り終わるまで少し待つ
+            pygame.time.wait(1000)  # 1秒待機
+        
         return pcd, np.asarray(pcd.points)
     except Exception as e:
         print(f"点群データの保存中にエラーが発生しました: {e}")
         return None, None
+    finally:
+        # サウンドリソースの解放
+        if start_sound:
+            start_sound.stop()
+        if complete_sound:
+            complete_sound.stop()
 
 def smooth_hand_positions_kalman(hand_index, current_position):
     """
@@ -269,7 +311,7 @@ def get_hand_positions(depth_frame, color_image):
         tuple: (手の3D位置リスト, 手の種類リスト, 深度カラーマップ, 手の位置を描画したカラー画像)
     """
     hand_positions_3d = []
-    hand_types = []  # 検出された手の種類（右/左）を保存
+    hand_types = []
 
     # MediaPipe用にRGB形式に変換
     color_image_rgb = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
@@ -386,6 +428,10 @@ def main():
 
             # 手の位置と3Dデータとの距離計算
             calculate_hand_distances(hand_positions, hand_types, kdtree)
+
+            # タイムアウトチェック
+            for controller in sound_controllers.values():
+                controller.check_timeout()
 
             # ウィンドウに検出状態を表示
             status_text = f"detecting: right hand{'ON' if DETECT_RIGHT_HAND else 'OFF'} | left hand{'ON' if DETECT_LEFT_HAND else 'OFF'}"

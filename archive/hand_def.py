@@ -46,8 +46,8 @@ pygame.mixer.init()
 # 音声ファイルの読み込み関数
 def create_sound():
     """音声ファイルを読み込み、サウンドオブジェクトを生成する"""
-    sound_close = pygame.mixer.Sound('music/touch.mp3')  # 手が近い時の音
-    sound_far = pygame.mixer.Sound('music/shukin.mp3')   # 手が遠い時の音
+    sound_close = pygame.mixer.Sound('music/A00.mp3')  # 手が近い時の音
+    sound_far = pygame.mixer.Sound('music/A04.mp3')   # 手が遠い時の音
     return sound_close, sound_far
 
 # 3D点群データの保存関数

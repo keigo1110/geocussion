@@ -235,8 +235,9 @@ class SoundController:
         self._lock = threading.Lock()
         self.last_hit_time = 0
         self.last_position = None
-        self.hit_cooldown = 0.1  # 100ms
+        self.hit_cooldown = 0.15  # クールダウンを少し長めに
         self.last_distance = float('inf')
+        self.active_channels = set()  # アクティブなチャンネルの追跡用
         self.is_in_contact = False
         self.debug_info = {}
         
@@ -269,8 +270,8 @@ class SoundController:
         """音声ファイルの読み込み"""
         sound_files = {
             'close': 'music/A00.mp3',
-            'far': 'music/A00.mp3',
-            'impact': 'music/A00.mp3'
+            'far': 'music/A04.mp3',
+            'impact': 'music/A05.mp3'
         }
 
         for sound_id, file_path in sound_files.items():
@@ -346,8 +347,68 @@ class SoundController:
             logger.error(f"ヒット検出エラー: {e}")
             return False
 
+    def _calculate_clean_intensity(self, speed: float, accel: float) -> float:
+        """よりクリーンな強度計算"""
+        try:
+            # 速度と加速度の影響を調整
+            speed_factor = min(speed / 2.0, 1.0)  # 2 m/s で最大
+            accel_factor = min(accel / 10.0, 1.0)  # 10 m/s² で最大
+            
+            # より自然な強度カーブ
+            base_intensity = (speed_factor * 0.7 + accel_factor * 0.3)  # 速度重視
+            intensity = pow(base_intensity, 1.5)  # より自然な強度カーブ
+            
+            # 強度の範囲を制限
+            return max(0.2, min(0.8, intensity))  # 最大音量を80%に制限
+            
+        except Exception as e:
+            logger.error(f"強度計算エラー: {e}")
+            return 0.3
+
+    def _play_clean_impact(self, intensity: float):
+        """クリーンな衝撃音の再生"""
+        try:
+            # 新しいチャンネルの割り当て
+            channel_offset = len(self.active_channels) % 3  # 3つのチャンネルを循環使用
+            channel_id = self.channel_id + 2 + channel_offset
+            
+            impact_channel = self.audio_manager.get_channel(channel_id)
+            if impact_channel:
+                # 既存の音を確実に停止
+                impact_channel.stop()
+                
+                sound = self.audio_manager._sounds.get(f"{self.hand_type}_impact")
+                if sound:
+                    # 音量を調整して再生
+                    adjusted_volume = intensity * 0.8  # 全体的な音量を少し下げる
+                    impact_channel.set_volume(adjusted_volume)
+                    impact_channel.play(sound)
+                    
+                    # アクティブチャンネルの記録
+                    self.active_channels.add((channel_id, time.time()))
+                    
+        except Exception as e:
+            logger.error(f"衝撃音再生エラー: {e}")
+
+    def _cleanup_old_sounds(self, current_time: float):
+        """古いサウンドのクリーンアップ"""
+        try:
+            # 0.5秒以上経過したチャンネルをクリーンアップ
+            channels_to_remove = set()
+            for channel_id, start_time in self.active_channels:
+                if current_time - start_time > 0.5:  # 500ms
+                    channel = self.audio_manager.get_channel(channel_id)
+                    if channel:
+                        channel.stop()
+                    channels_to_remove.add((channel_id, start_time))
+            
+            self.active_channels -= channels_to_remove
+            
+        except Exception as e:
+            logger.error(f"サウンドクリーンアップエラー: {e}")
+
     def update_sound(self, distance: float, current_position: np.ndarray):
-        """サウンド状態の更新（改善版）"""
+        """サウンド状態の更新（クリーンな音響版）"""
         try:
             current_time = time.time()
             
@@ -361,20 +422,28 @@ class SoundController:
                 speed = np.linalg.norm(velocity)
                 accel = np.linalg.norm(acceleration)
                 
-                # 急激な動きの検出（叩く動作）
-                is_hit = self._detect_hit_motion(speed, accel, distance)
+                # 接触判定
+                contact_threshold = 0.1  # 10cm
+                is_contact = distance < contact_threshold
                 
-                if is_hit and current_time - self.last_hit_time > self.hit_cooldown:
-                    # 衝撃音の再生
-                    hit_intensity = self._calculate_hit_intensity(speed, accel)
-                    self._play_impact_sound(hit_intensity)
-                    self.last_hit_time = current_time
+                if is_contact:
+                    # 叩く動作の検出（閾値を調整）
+                    is_hit = speed > 0.4 and accel > 4.0  # より明確な閾値
                     
-                    if DEBUG_MODE:
-                        logger.debug(f"{self.hand_type} Hit detected - Speed: {speed:.2f}, Accel: {accel:.2f}, Intensity: {hit_intensity:.2f}")
+                    if is_hit and current_time - self.last_hit_time > self.hit_cooldown:
+                        # より自然な強度計算
+                        hit_intensity = self._calculate_clean_intensity(speed, accel)
+                        self._play_clean_impact(hit_intensity)
+                        self.last_hit_time = current_time
+                        
+                        if DEBUG_MODE:
+                            logger.debug(f"{self.hand_type} Hit - Speed: {speed:.2f}, Accel: {accel:.2f}, Intensity: {hit_intensity:.2f}")
 
             self.last_position = filtered_position
             self.last_distance = distance
+            
+            # 古いサウンドのクリーンアップ
+            self._cleanup_old_sounds(current_time)
             
         except Exception as e:
             logger.error(f"サウンド更新エラー: {e}")
@@ -648,9 +717,15 @@ class SoundController:
         """リソースの解放"""
         try:
             with self._lock:
-                if self.is_playing:
-                    self._stop_sound()
+                # すべてのアクティブなサウンドを停止
+                for channel_id, _ in self.active_channels:
+                    channel = self.audio_manager.get_channel(channel_id)
+                    if channel:
+                        channel.stop()
+                
+                self.active_channels.clear()
                 self.motion_metrics = MotionMetrics()
                 logger.info(f"SoundController ({self.hand_type}) のリソースを解放しました")
+                
         except Exception as e:
             logger.error(f"SoundController クリーンアップエラー: {e}")
